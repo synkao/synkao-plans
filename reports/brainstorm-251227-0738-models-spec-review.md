@@ -1,0 +1,202 @@
+# 📋 Models Spec Review Report
+
+**Date:** 2024-12-27
+**File reviewed:** `docs/synkao-models-spec.md` (v1.1)
+**Session type:** Brainstorm & Review
+
+---
+
+## 1. Tóm tắt thay đổi v1.1
+
+- Bỏ Fulfillment entities (Fulfiller, Fulfillment, FulfillmentItem)
+- Tracking info lưu trực tiếp trong Order
+- Đơn giản hóa từ ~15 entities xuống còn 12 entities
+
+**Đánh giá:** ✅ Đúng hướng KISS/YAGNI cho MVP
+
+---
+
+## 2. Điểm mạnh
+
+| # | Aspect | Đánh giá |
+|---|--------|----------|
+| 1 | State machines | Rõ ràng, transition rules chi tiết |
+| 2 | Permission matrix | Phân quyền owner/staff/designer hợp lý |
+| 3 | Index strategy | Đã plan composite indexes cho common queries |
+| 4 | Value objects | Money, Address được tách riêng |
+| 5 | Enum definitions | Đầy đủ, có color mapping |
+
+---
+
+## 3. Thay đổi cần thực hiện
+
+### 3.1 🔴 Priority High
+
+#### A. TaskAssignment Entity (Multi-Assignee)
+
+**Vấn đề:** Hiện tại chỉ có 1 assignee per task
+
+```go
+// Current
+AssigneeID *string // Chỉ 1 người
+```
+
+**Giải pháp:** Thêm junction table
+
+```go
+type TaskAssignment struct {
+    ID          string    `json:"id"`
+    TaskID      string    `json:"task_id"`       // FK → DesignTask
+    UserID      string    `json:"user_id"`       // FK → User
+    Role        string    `json:"role"`          // "primary", "support"
+    AssignedBy  string    `json:"assigned_by"`
+    AssignedAt  time.Time `json:"assigned_at"`
+}
+```
+
+**Index:**
+```sql
+CREATE UNIQUE INDEX idx_task_assignment_unique
+ON task_assignments(task_id, user_id);
+
+CREATE INDEX idx_task_assignment_user
+ON task_assignments(user_id, task_id);
+```
+
+---
+
+#### B. StoreConfig Encryption
+
+**Vấn đề:** Credentials lưu plaintext trong JSON
+
+```go
+WooConsumerSecret string // ⚠️ Security risk
+ShopifyAPISecret  string // ⚠️ Security risk
+```
+
+**Giải pháp options:**
+1. Encrypt at application level (AES-256)
+2. Use external secret manager (Vault, AWS Secrets Manager)
+3. Store encrypted, decrypt on read
+
+---
+
+### 3.2 🟡 Priority Medium
+
+#### C. Optimistic Locking
+
+**Vấn đề:** Kanban drag-drop có thể conflict
+
+**Giải pháp:** Thêm version field
+
+```go
+type DesignTask struct {
+    // ...existing fields...
+    Version int `json:"version"` // Increment on each update
+}
+```
+
+**Validation:**
+```sql
+UPDATE design_tasks
+SET position = $1, version = version + 1
+WHERE id = $2 AND version = $3
+-- If rows affected = 0 → conflict, return error
+```
+
+---
+
+### 3.3 🟢 Priority Low
+
+#### D. Bỏ bidirectional FK
+
+**Hiện tại:**
+```go
+// OrderItem
+DesignTaskID *string  // FK → DesignTask ← BỎ
+
+// DesignTask
+OrderItemID string    // FK → OrderItem ← GIỮ
+```
+
+**Lý do:** Chỉ cần 1 chiều, query ngược qua JOIN
+
+---
+
+#### E. Soft Delete Strategy
+
+**Đề xuất:** Thêm `DeletedAt` cho:
+- Order (giữ history)
+- DesignTask (audit trail)
+- Design (version history đã có, không cần)
+
+---
+
+### 3.4 ⚪ Future (Post-MVP)
+
+#### F. ProductExternalID Integration
+
+Khi integrate với hệ thống PIM bên thứ 3:
+
+```go
+type OrderItem struct {
+    // ...existing...
+    ProductExternalID string `json:"product_external_id"` // Link to PIM
+}
+
+type DesignTask struct {
+    // ...existing...
+    ProductExternalID string `json:"product_external_id"` // Link to PIM
+}
+```
+
+**Relationship mới:**
+```
+OrderItem ──┬──▶ ProductExternalID ◀──┬── DesignTask
+            │                         │
+            └─────── (same product) ──┘
+```
+
+---
+
+## 4. Quyết định đã thống nhất
+
+| Topic | Decision | Rationale |
+|-------|----------|-----------|
+| Multi-assignee | Junction table | Flexibility, track history |
+| Versioning | Auto-increment | Mỗi upload = version mới |
+| Conflict | Optimistic locking | Prevent data loss |
+| FK direction | Task → Item only | Simpler, one source of truth |
+| Product link | Future (PIM) | Chưa cần cho MVP |
+| Tags/Attrs | Free-form | User tự định nghĩa |
+| Design reuse | Flexible | Có thể reuse hoặc tạo mới |
+
+---
+
+## 5. Entity Count Summary
+
+| Before (v1.0) | After (v1.1) | After Review |
+|---------------|--------------|--------------|
+| ~15 entities | 12 entities | 13 entities (+TaskAssignment) |
+
+---
+
+## 6. Action Items
+
+- [ ] Cập nhật `docs/synkao-models-spec.md` với các thay đổi trên
+- [ ] Tạo GitHub issue cho TaskAssignment implementation
+- [ ] Tạo GitHub issue cho StoreConfig encryption
+- [ ] Review lại khi integrate PIM system
+
+---
+
+## 7. Unresolved Questions
+
+1. **Soft delete scope:** Có cần soft delete cho User/Store không?
+2. **Design reuse UX:** Khi reuse design, UI flow như thế nào?
+3. **Version conflict UX:** Khi optimistic lock fail, hiển thị gì cho user?
+
+---
+
+*Report generated by Brainstormer Agent*
+*Synkao Order Management System*
